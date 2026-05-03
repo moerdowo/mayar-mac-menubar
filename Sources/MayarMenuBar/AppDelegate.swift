@@ -1,27 +1,60 @@
 import AppKit
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem!
+    private let popover = NSPopover()
+    private let vc = BalanceViewController()
     private let api = MayarAPI()
     private var refreshTimer: Timer?
+    private var eventMonitor: Any?
 
     private var balance: BalanceResponse.Balance?
     private var paid: [PaidTransaction] = []
+    private var paidPage = 1
+    private var paidPageInfo = PageInfo.unknown
     private var unpaid: [UnpaidTransaction] = []
+    private var unpaidPage = 1
+    private var unpaidPageInfo = PageInfo.unknown
+    private var products: [Product] = []
+    private var productsPage = 1
+    private var productsPageInfo = PageInfo.unknown
     private var lastError: String?
     private var isLoading = false
+    private var paginatingTab: BalanceViewController.Tab?
+
+    private let pageSize = 10
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.title = "Mayar …"
-            button.image = NSImage(systemSymbolName: "creditcard", accessibilityDescription: "Mayar")
+            applyStatusBarIcon(to: button)
             button.imagePosition = .imageLeading
+            button.title = " Mayar"
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+        popover.contentViewController = vc
+
+        vc.onRefresh = { [weak self] in self?.refresh() }
+        vc.onSettings = { [weak self] in self?.showSettingsMenu() }
+        vc.onOpenURL = { url in NSWorkspace.shared.open(url) }
+        vc.onTabChanged = { _ in /* tab is local UI state */ }
+        vc.onPrevPage = { [weak self] tab in self?.changePage(tab: tab, delta: -1) }
+        vc.onNextPage = { [weak self] tab in self?.changePage(tab: tab, delta: +1) }
+
+        // Force loadView() to run now, so subsequent render() calls operate on
+        // a real, attached view hierarchy.
+        _ = vc.view
+
         api.config = ConfigStore.load()
-        rebuildMenu()
+        applyAppearancePreference()
+        renderState()
         if api.config == nil {
             promptForAPIKey(initial: true)
         } else {
@@ -33,181 +66,310 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Status item icon
+
+    private static let statusBarIcon: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "MayarLogo", withExtension: "svg") else {
+            NSLog("[Mayar] MayarLogo.svg not in bundle")
+            return nil
+        }
+        guard let img = NSImage(contentsOf: url) else {
+            NSLog("[Mayar] NSImage failed to load MayarLogo.svg")
+            return nil
+        }
+        let h: CGFloat = 18
+        let w: CGFloat = h * (133.95 / 108.0)  // preserve aspect
+        img.size = NSSize(width: w, height: h)
+        // Template image: macOS uses only the alpha channel and tints to match
+        // the menu bar appearance (white in dark menu bar, black in light).
+        img.isTemplate = true
+        NSLog("[Mayar] menu bar icon ready: \(w)x\(h) (template)")
+        return img
+    }()
+
+    private func applyStatusBarIcon(to button: NSStatusBarButton) {
+        if let logo = AppDelegate.statusBarIcon {
+            button.image = logo
+        } else {
+            button.image = NSImage(systemSymbolName: "creditcard", accessibilityDescription: "Mayar")
+        }
+    }
+
+    // MARK: - Appearance
+
+    private func applyAppearancePreference() {
+        let appearance = api.config?.appearance ?? .light
+        vc.applyAppearance(appearance)
+    }
+
+    // MARK: - Status item interaction
+
+    @objc private func statusItemClicked(_ sender: Any?) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp {
+            showContextMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    private func togglePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            guard let button = statusItem.button else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            refresh()
+            startMonitoringOutsideClicks()
+        }
+    }
+
+    private func showContextMenu() {
+        let menu = NSMenu()
+        menu.addItem(item("Refresh", #selector(menuRefresh)))
+        menu.addItem(item("Set API Key…", #selector(menuSetKey)))
+        menu.addItem(item("Toggle Environment", #selector(menuToggleEnv)))
+        menu.addItem(item("Launch at Login", #selector(menuToggleLogin)))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(item("Open Dashboard", #selector(menuDashboard)))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(item("Quit", #selector(menuQuit)))
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    private func showSettingsMenu() {
+        let menu = buildSettingsMenu()
+        if let win = popover.contentViewController?.view.window {
+            let p = NSPoint(x: win.frame.maxX - 140, y: win.frame.maxY - 30)
+            menu.popUp(positioning: nil, at: p, in: nil)
+        } else {
+            menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+        }
+    }
+
+    private func buildSettingsMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(item("Set API Key…", #selector(menuSetKey)))
+        menu.addItem(NSMenuItem.separator())
+
+        // Environment
+        let envItem = item("Environment: \(api.config?.environment.rawValue ?? "—") (toggle)",
+                           #selector(menuToggleEnv))
+        menu.addItem(envItem)
+
+        // Hide balance toggle
+        let hideItem = item("Hide Balance in Menu Bar", #selector(menuToggleHideBalance))
+        hideItem.state = (api.config?.hideBalance ?? false) ? .on : .off
+        menu.addItem(hideItem)
+
+        // Appearance submenu
+        let appearanceItem = NSMenuItem(title: "Appearance", action: nil, keyEquivalent: "")
+        let appearanceSub = NSMenu()
+        let current = api.config?.appearance ?? .light
+        for opt in Theme.Appearance.allCases {
+            let mi = item(appearanceLabel(opt), #selector(menuPickAppearance(_:)))
+            mi.tag = appearanceTag(opt)
+            mi.state = (opt == current) ? .on : .off
+            appearanceSub.addItem(mi)
+        }
+        appearanceItem.submenu = appearanceSub
+        menu.addItem(appearanceItem)
+
+        menu.addItem(item("Launch at Login", #selector(menuToggleLogin)))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(item("Open Dashboard", #selector(menuDashboard)))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(item("Quit", #selector(menuQuit)))
+        return menu
+    }
+
+    private func appearanceLabel(_ a: Theme.Appearance) -> String {
+        switch a {
+        case .light:  return "Light"
+        case .dark:   return "Dark"
+        case .system: return "System"
+        }
+    }
+    private func appearanceTag(_ a: Theme.Appearance) -> Int {
+        switch a {
+        case .light:  return 1
+        case .dark:   return 2
+        case .system: return 3
+        }
+    }
+    private func appearance(forTag tag: Int) -> Theme.Appearance {
+        switch tag {
+        case 2: return .dark
+        case 3: return .system
+        default: return .light
+        }
+    }
+
+    private func item(_ title: String, _ sel: Selector) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+        i.target = self
+        return i
+    }
+
+    @objc private func menuRefresh() { refresh() }
+    @objc private func menuSetKey() { promptForAPIKey(initial: false) }
+    @objc private func menuToggleEnv() { toggleEnv() }
+    @objc private func menuToggleLogin() { toggleLaunchAtLogin() }
+    @objc private func menuDashboard() { openDashboard() }
+    @objc private func menuQuit() { NSApp.terminate(nil) }
+
+    @objc private func menuToggleHideBalance() {
+        guard var cfg = api.config else { return }
+        cfg.hideBalance.toggle()
+        try? ConfigStore.save(cfg)
+        api.config = cfg
+        renderState()
+    }
+
+    @objc private func menuPickAppearance(_ sender: NSMenuItem) {
+        guard var cfg = api.config else { return }
+        cfg.appearance = appearance(forTag: sender.tag)
+        try? ConfigStore.save(cfg)
+        api.config = cfg
+        applyAppearancePreference()
+    }
+
+    private func startMonitoringOutsideClicks() {
+        if eventMonitor != nil { return }
+        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            guard let self = self, self.popover.isShown else { return }
+            self.popover.performClose(nil)
+        }
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        if let m = eventMonitor { NSEvent.removeMonitor(m); eventMonitor = nil }
+    }
+
+    // MARK: - Pagination
+
+    private func changePage(tab: BalanceViewController.Tab, delta: Int) {
+        var didChange = false
+        switch tab {
+        case .paid:
+            let next = max(1, paidPage + delta)
+            if next != paidPage && (delta < 0 || paidPageInfo.hasMore || next <= paidPageInfo.pageCount) {
+                paidPage = next; didChange = true
+            }
+        case .unpaid:
+            let next = max(1, unpaidPage + delta)
+            if next != unpaidPage && (delta < 0 || unpaidPageInfo.hasMore || next <= unpaidPageInfo.pageCount) {
+                unpaidPage = next; didChange = true
+            }
+        case .products:
+            let next = max(1, productsPage + delta)
+            if next != productsPage && (delta < 0 || productsPageInfo.hasMore || next <= productsPageInfo.pageCount) {
+                productsPage = next; didChange = true
+            }
+        }
+        if didChange {
+            paginatingTab = tab
+            vc.paginatingTab = tab
+            refresh()
+        }
+    }
+
     // MARK: - Refresh
 
     @objc private func refresh() {
-        guard !isLoading, let _ = api.config else { return }
+        guard !isLoading else { return }
+        guard api.config != nil else { renderState(); return }
         isLoading = true
-        rebuildMenu()
+        if balance == nil { renderState() }
+
         Task { [weak self] in
             guard let self = self else { return }
             do {
-                async let b = self.api.balance()
-                async let p = self.api.paidTransactions(pageSize: 8)
-                async let u = self.api.unpaidTransactions(pageSize: 5)
-                let (balance, paid, unpaid) = try await (b, p, u)
+                async let bResp = self.api.balance()
+                async let pResp = self.api.paidTransactions(page: self.paidPage, pageSize: self.pageSize)
+                async let uResp = self.api.unpaidTransactions(page: self.unpaidPage, pageSize: self.pageSize)
+                async let prResp = self.api.products(page: self.productsPage, pageSize: self.pageSize)
+                let (b, p, u, pr) = try await (bResp, pResp, uResp, prResp)
                 await MainActor.run {
-                    self.balance = balance
-                    self.paid = paid
-                    self.unpaid = unpaid
+                    self.balance = b
+                    self.paid = p.data
+                    self.paidPageInfo = p.pageInfo
+                    self.unpaid = u.data
+                    self.unpaidPageInfo = u.pageInfo
+                    self.products = pr.data
+                    self.productsPageInfo = pr.pageInfo
                     self.lastError = nil
                     self.isLoading = false
-                    self.rebuildMenu()
+                    self.paginatingTab = nil
+                    self.vc.paginatingTab = nil
+                    self.renderState()
                 }
             } catch {
                 await MainActor.run {
                     self.lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                     self.isLoading = false
-                    self.rebuildMenu()
+                    self.paginatingTab = nil
+                    self.vc.paginatingTab = nil
+                    self.renderState()
                 }
             }
         }
     }
 
-    // MARK: - Menu
-
-    private func rebuildMenu() {
-        let menu = NSMenu()
+    private func renderState() {
+        let hide = api.config?.hideBalance ?? false
+        if hide {
+            // Just the icon — no text at all.
+            statusItem.button?.title = ""
+        } else if let b = balance {
+            statusItem.button?.title = " " + Format.shortRupiah(b.balance)
+        } else if api.config == nil {
+            statusItem.button?.title = " Mayar"
+        } else if isLoading {
+            statusItem.button?.title = " …"
+        } else {
+            statusItem.button?.title = " Mayar"
+        }
 
         if api.config == nil {
-            menu.addItem(disabled("API key not set"))
-            menu.addItem(NSMenuItem.separator())
-            menu.addItem(action("Set API Key…", #selector(setAPIKeyAction)))
+            vc.render(.unconfigured)
+        } else if let err = lastError, balance == nil {
+            vc.render(.error(err))
         } else if let b = balance {
-            if let button = statusItem.button {
-                button.title = Format.shortRupiah(b.balance)
-            }
-            menu.addItem(disabled("Active     \(Format.rupiah(b.balanceActive))"))
-            menu.addItem(disabled("Pending  \(Format.rupiah(b.balancePending))"))
-            menu.addItem(disabled("Total      \(Format.rupiah(b.balance))"))
-            menu.addItem(NSMenuItem.separator())
-
-            if !unpaid.isEmpty {
-                let header = disabled("Unpaid (\(unpaid.count))")
-                menu.addItem(header)
-                for tx in unpaid.prefix(5) {
-                    menu.addItem(unpaidItem(tx))
-                }
-                menu.addItem(NSMenuItem.separator())
-            }
-
-            menu.addItem(disabled("Recent paid"))
-            if paid.isEmpty {
-                menu.addItem(disabled("  (none yet)"))
-            } else {
-                for tx in paid.prefix(8) {
-                    menu.addItem(paidItem(tx))
-                }
-            }
-            menu.addItem(NSMenuItem.separator())
-        } else if isLoading {
-            statusItem.button?.title = "Mayar …"
-            menu.addItem(disabled("Loading…"))
-            menu.addItem(NSMenuItem.separator())
+            vc.render(.loaded(.init(
+                balance: b,
+                paid: paid, paidPage: paidPageInfo,
+                unpaid: unpaid, unpaidPage: unpaidPageInfo,
+                products: products, productsPage: productsPageInfo
+            )))
+        } else {
+            vc.render(.loading)
         }
-
-        if let err = lastError {
-            statusItem.button?.title = "Mayar !"
-            menu.addItem(disabled("Error: \(err)"))
-            menu.addItem(NSMenuItem.separator())
-        }
-
-        if let cfg = api.config {
-            menu.addItem(disabled("Env: \(cfg.environment.rawValue)"))
-        }
-        menu.addItem(action("Refresh", #selector(refreshAction), key: "r"))
-        menu.addItem(action("Open Mayar Dashboard", #selector(openDashboardAction)))
-
-        let settings = NSMenu()
-        settings.addItem(action("Set API Key…", #selector(setAPIKeyAction)))
-        settings.addItem(NSMenuItem.separator())
-        let prodItem = action("Use Production", #selector(useProductionAction))
-        prodItem.state = api.config?.environment == .production ? .on : .off
-        settings.addItem(prodItem)
-        let sandItem = action("Use Sandbox", #selector(useSandboxAction))
-        sandItem.state = api.config?.environment == .sandbox ? .on : .off
-        settings.addItem(sandItem)
-        settings.addItem(NSMenuItem.separator())
-        let loginItem = action("Launch at Login", #selector(toggleLaunchAtLoginAction))
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        settings.addItem(loginItem)
-        let settingsItem = NSMenuItem(title: "Settings", action: nil, keyEquivalent: "")
-        settingsItem.submenu = settings
-        menu.addItem(settingsItem)
-
-        menu.addItem(NSMenuItem.separator())
-        menu.addItem(action("Quit", #selector(quitAction), key: "q"))
-
-        statusItem.menu = menu
     }
 
-    private func disabled(_ title: String) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        return item
+    // MARK: - Settings actions
+
+    private func toggleEnv() {
+        guard var cfg = api.config else { promptForAPIKey(initial: true); return }
+        cfg.environment = cfg.environment == .production ? .sandbox : .production
+        try? ConfigStore.save(cfg)
+        api.config = cfg
+        balance = nil; paid = []; unpaid = []; products = []
+        paidPage = 1; unpaidPage = 1; productsPage = 1
+        refresh()
     }
 
-    private func action(_ title: String, _ selector: Selector, key: String = "") -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: selector, keyEquivalent: key)
-        item.target = self
-        return item
-    }
-
-    private func paidItem(_ tx: PaidTransaction) -> NSMenuItem {
-        let amount = Format.rupiah(tx.credit ?? 0)
-        let who = tx.customer?.name ?? tx.customer?.email ?? "—"
-        let when = tx.createdAt.map(Format.relativeTime) ?? ""
-        let title = "  +\(amount)  \(who)  \(when)"
-        let item = NSMenuItem(title: title, action: #selector(copyTxIdAction(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = tx.id
-        item.toolTip = [tx.paymentLink?.name, tx.paymentMethod, tx.balanceHistoryType]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-        return item
-    }
-
-    private func unpaidItem(_ tx: UnpaidTransaction) -> NSMenuItem {
-        let amount = Format.rupiah(tx.amount ?? 0)
-        let who = tx.customer?.name ?? tx.customer?.email ?? "—"
-        let title = "  \(amount)  \(who)  ↗"
-        let item = NSMenuItem(title: title, action: #selector(openUnpaidURLAction(_:)), keyEquivalent: "")
-        item.target = self
-        item.representedObject = tx.paymentUrl
-        item.toolTip = "Open payment URL"
-        return item
-    }
-
-    // MARK: - Actions
-
-    @objc private func refreshAction() { refresh() }
-
-    @objc private func quitAction() { NSApp.terminate(nil) }
-
-    @objc private func openDashboardAction() {
+    private func openDashboard() {
         let url = api.config?.environment == .sandbox
             ? URL(string: "https://web.mayar.club")!
             : URL(string: "https://web.mayar.id")!
         NSWorkspace.shared.open(url)
     }
 
-    @objc private func copyTxIdAction(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(id, forType: .string)
-    }
-
-    @objc private func openUnpaidURLAction(_ sender: NSMenuItem) {
-        guard let s = sender.representedObject as? String, let url = URL(string: s) else { return }
-        NSWorkspace.shared.open(url)
-    }
-
-    @objc private func setAPIKeyAction() { promptForAPIKey(initial: false) }
-
-    @objc private func useProductionAction() { switchEnv(.production) }
-    @objc private func useSandboxAction() { switchEnv(.sandbox) }
-
-    @objc private func toggleLaunchAtLoginAction() {
+    private func toggleLaunchAtLogin() {
         let service = SMAppService.mainApp
         do {
             switch service.status {
@@ -230,18 +392,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             """
             alert.runModal()
         }
-        rebuildMenu()
-    }
-
-    private func switchEnv(_ env: Config.Environment) {
-        guard var cfg = api.config else {
-            promptForAPIKey(initial: true)
-            return
-        }
-        cfg.environment = env
-        try? ConfigStore.save(cfg)
-        api.config = cfg
-        refresh()
     }
 
     private func promptForAPIKey(initial: Bool) {
@@ -279,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try ConfigStore.save(cfg)
             api.config = cfg
+            balance = nil
             refresh()
         } catch {
             let e = NSAlert()

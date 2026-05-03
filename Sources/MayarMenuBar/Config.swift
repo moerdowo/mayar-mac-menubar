@@ -3,6 +3,8 @@ import Foundation
 struct Config: Codable {
     var apiKey: String
     var environment: Environment
+    var hideBalance: Bool = false
+    var appearance: Theme.Appearance = .light
 
     enum Environment: String, Codable {
         case production
@@ -14,6 +16,26 @@ struct Config: Codable {
             case .sandbox:    return URL(string: "https://api.mayar.club")!
             }
         }
+    }
+
+    // Custom decoding so older config files (without the new fields) still
+    // load instead of failing.
+    enum CodingKeys: String, CodingKey {
+        case apiKey, environment, hideBalance, appearance
+    }
+    init(apiKey: String, environment: Environment,
+         hideBalance: Bool = false, appearance: Theme.Appearance = .light) {
+        self.apiKey = apiKey
+        self.environment = environment
+        self.hideBalance = hideBalance
+        self.appearance = appearance
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        apiKey = try c.decode(String.self, forKey: .apiKey)
+        environment = try c.decode(Environment.self, forKey: .environment)
+        hideBalance = (try? c.decode(Bool.self, forKey: .hideBalance)) ?? false
+        appearance = (try? c.decode(Theme.Appearance.self, forKey: .appearance)) ?? .light
     }
 }
 
