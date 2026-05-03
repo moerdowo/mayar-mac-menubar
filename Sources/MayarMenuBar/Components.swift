@@ -112,6 +112,8 @@ final class IconButton: NSButton {
         self.bezelStyle = .regularSquare
         self.isBordered = false
         self.setButtonType(.momentaryChange)
+        self.focusRingType = .none
+        self.refusesFirstResponder = true
         self.wantsLayer = true
         self.layer?.cornerRadius = 8
         self.layer?.cornerCurve = .continuous
@@ -123,6 +125,8 @@ final class IconButton: NSButton {
         ])
     }
     required init?(coder: NSCoder) { fatalError() }
+    override var canBecomeKeyView: Bool { false }
+    override var acceptsFirstResponder: Bool { false }
 
     override var intrinsicContentSize: NSSize { NSSize(width: 30, height: 30) }
 
@@ -146,6 +150,8 @@ final class TabButton: NSButton {
         self.bezelStyle = .regularSquare
         self.isBordered = false
         self.setButtonType(.momentaryChange)
+        self.focusRingType = .none
+        self.refusesFirstResponder = true
         self.wantsLayer = true
         self.layer?.cornerRadius = 16
         self.layer?.cornerCurve = .continuous
@@ -153,6 +159,9 @@ final class TabButton: NSButton {
         restyleTitle()
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var canBecomeKeyView: Bool { false }
+    override var acceptsFirstResponder: Bool { false }
 
     override var intrinsicContentSize: NSSize {
         let attrs: [NSAttributedString.Key: Any] = [.font: font ?? Theme.font(13, .medium)]
@@ -204,11 +213,16 @@ final class SoftButton: NSButton {
         self.bezelStyle = .regularSquare
         self.isBordered = false
         self.setButtonType(.momentaryChange)
+        self.focusRingType = .none
+        self.refusesFirstResponder = true
         self.wantsLayer = true
         self.layer?.cornerRadius = 8
         self.layer?.cornerCurve = .continuous
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var canBecomeKeyView: Bool { false }
+    override var acceptsFirstResponder: Bool { false }
 
     override var intrinsicContentSize: NSSize {
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .semibold)]

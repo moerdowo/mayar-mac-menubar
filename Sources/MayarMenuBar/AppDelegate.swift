@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var lastError: String?
     private var isLoading = false
     private var paginatingTab: BalanceViewController.Tab?
+    private var forceRefreshActive = false
 
     private let pageSize = 10
 
@@ -41,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self
         popover.contentViewController = vc
 
-        vc.onRefresh = { [weak self] in self?.refresh() }
+        vc.onRefresh = { [weak self] in self?.refresh(force: true) }
         vc.onSettings = { [weak self] in self?.showSettingsMenu() }
         vc.onOpenURL = { url in NSWorkspace.shared.open(url) }
         vc.onTabChanged = { _ in /* tab is local UI state */ }
@@ -58,11 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if api.config == nil {
             promptForAPIKey(initial: true)
         } else {
-            refresh()
+            refresh(force: false)
         }
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            self?.refresh()
+            self?.refresh(force: false)
         }
     }
 
@@ -120,7 +121,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             guard let button = statusItem.button else { return }
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            refresh()
+            // Background refresh on open; don't disrupt the visible numbers.
+            refresh(force: false)
             startMonitoringOutsideClicks()
         }
     }
@@ -129,7 +131,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let menu = NSMenu()
         menu.addItem(item("Refresh", #selector(menuRefresh)))
         menu.addItem(item("Set API Key…", #selector(menuSetKey)))
-        menu.addItem(item("Toggle Environment", #selector(menuToggleEnv)))
         menu.addItem(item("Launch at Login", #selector(menuToggleLogin)))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(item("Open Dashboard", #selector(menuDashboard)))
@@ -154,11 +155,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let menu = NSMenu()
         menu.addItem(item("Set API Key…", #selector(menuSetKey)))
         menu.addItem(NSMenuItem.separator())
-
-        // Environment
-        let envItem = item("Environment: \(api.config?.environment.rawValue ?? "—") (toggle)",
-                           #selector(menuToggleEnv))
-        menu.addItem(envItem)
 
         // Hide balance toggle
         let hideItem = item("Hide Balance in Menu Bar", #selector(menuToggleHideBalance))
@@ -214,9 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         return i
     }
 
-    @objc private func menuRefresh() { refresh() }
+    @objc private func menuRefresh() { refresh(force: true) }
     @objc private func menuSetKey() { promptForAPIKey(initial: false) }
-    @objc private func menuToggleEnv() { toggleEnv() }
     @objc private func menuToggleLogin() { toggleLaunchAtLogin() }
     @objc private func menuDashboard() { openDashboard() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
@@ -273,17 +268,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if didChange {
             paginatingTab = tab
             vc.paginatingTab = tab
-            refresh()
+            refresh(force: false)
         }
     }
 
     // MARK: - Refresh
 
-    @objc private func refresh() {
+    private func refresh(force: Bool = false) {
         guard !isLoading else { return }
         guard api.config != nil else { renderState(); return }
         isLoading = true
-        if balance == nil { renderState() }
+        forceRefreshActive = force
+        vc.isFetching = true
+        if force {
+            // Manual refresh implies a fresh look; cancel any in-flight
+            // pagination state so the loading view covers all tabs.
+            paginatingTab = nil
+            vc.paginatingTab = nil
+        }
+        if force || balance == nil { renderState() }
 
         Task { [weak self] in
             guard let self = self else { return }
@@ -303,16 +306,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                     self.productsPageInfo = pr.pageInfo
                     self.lastError = nil
                     self.isLoading = false
+                    self.forceRefreshActive = false
                     self.paginatingTab = nil
                     self.vc.paginatingTab = nil
+                    self.vc.isFetching = false
                     self.renderState()
                 }
             } catch {
                 await MainActor.run {
                     self.lastError = (error as? LocalizedError)?.errorDescription ?? "\(error)"
                     self.isLoading = false
+                    self.forceRefreshActive = false
                     self.paginatingTab = nil
                     self.vc.paginatingTab = nil
+                    self.vc.isFetching = false
                     self.renderState()
                 }
             }
@@ -338,6 +345,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             vc.render(.unconfigured)
         } else if let err = lastError, balance == nil {
             vc.render(.error(err))
+        } else if isLoading && (forceRefreshActive || balance == nil) {
+            // Force-refresh shows the skeleton state even if we already have
+            // data, so the user gets visual feedback that something happened.
+            vc.render(.loading(force: forceRefreshActive))
         } else if let b = balance {
             vc.render(.loaded(.init(
                 balance: b,
@@ -346,27 +357,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
                 products: products, productsPage: productsPageInfo
             )))
         } else {
-            vc.render(.loading)
+            vc.render(.loading(force: false))
         }
     }
 
     // MARK: - Settings actions
 
-    private func toggleEnv() {
-        guard var cfg = api.config else { promptForAPIKey(initial: true); return }
-        cfg.environment = cfg.environment == .production ? .sandbox : .production
-        try? ConfigStore.save(cfg)
-        api.config = cfg
-        balance = nil; paid = []; unpaid = []; products = []
-        paidPage = 1; unpaidPage = 1; productsPage = 1
-        refresh()
-    }
-
     private func openDashboard() {
-        let url = api.config?.environment == .sandbox
-            ? URL(string: "https://web.mayar.club")!
-            : URL(string: "https://web.mayar.id")!
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(URL(string: "https://web.mayar.id")!)
     }
 
     private func toggleLaunchAtLogin() {
@@ -398,39 +396,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = initial ? "Set Mayar API key" : "Update Mayar API key"
-        alert.informativeText = "Bearer token from web.mayar.id/api-keys (or web.mayar.club for sandbox)."
+        alert.informativeText = "Bearer token from web.mayar.id/api-keys."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 320, height: 56))
-        stack.orientation = .vertical
-        stack.spacing = 6
-        stack.alignment = .leading
 
         let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
         field.placeholderString = "mayar_xxx…"
         if let existing = api.config?.apiKey { field.stringValue = existing }
-        stack.addArrangedSubview(field)
-
-        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 24), pullsDown: false)
-        popup.addItems(withTitles: ["Production", "Sandbox"])
-        popup.selectItem(at: api.config?.environment == .sandbox ? 1 : 0)
-        stack.addArrangedSubview(popup)
-
-        alert.accessoryView = stack
+        alert.accessoryView = field
         alert.window.initialFirstResponder = field
 
         let response = alert.runModal()
         guard response == .alertFirstButtonReturn else { return }
         let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
-        let env: Config.Environment = popup.indexOfSelectedItem == 1 ? .sandbox : .production
-        let cfg = Config(apiKey: key, environment: env)
+        let cfg = Config(apiKey: key, environment: .production)
         do {
             try ConfigStore.save(cfg)
             api.config = cfg
             balance = nil
-            refresh()
+            refresh(force: true)
         } catch {
             let e = NSAlert()
             e.messageText = "Couldn't save config"

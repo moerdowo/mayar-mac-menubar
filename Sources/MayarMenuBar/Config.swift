@@ -50,12 +50,20 @@ enum ConfigStore {
 
     static func load() -> Config? {
         if let key = ProcessInfo.processInfo.environment["MAYAR_API_KEY"], !key.isEmpty {
-            let envName = ProcessInfo.processInfo.environment["MAYAR_ENV"] ?? "production"
-            let env = Config.Environment(rawValue: envName) ?? .production
-            return Config(apiKey: key, environment: env)
+            // Production-only now; the MAYAR_ENV override has been removed.
+            return Config(apiKey: key, environment: .production)
         }
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return try? JSONDecoder().decode(Config.self, from: data)
+        guard let data = try? Data(contentsOf: fileURL),
+              var cfg = try? JSONDecoder().decode(Config.self, from: data) else {
+            return nil
+        }
+        // Migrate older configs that used the sandbox environment — sandbox is
+        // no longer supported by the app, so silently flip to production.
+        if cfg.environment != .production {
+            cfg.environment = .production
+            try? save(cfg)
+        }
+        return cfg
     }
 
     static func save(_ config: Config) throws {
