@@ -4,6 +4,20 @@ final class BalanceViewController: NSViewController {
 
     enum Tab: Int { case paid, unpaid, products }
 
+    enum DetailItem {
+        case paid(PaidTransaction)
+        case unpaid(UnpaidTransaction)
+        case product(Product)
+
+        var title: String {
+            switch self {
+            case .paid:    return "Paid Transaction"
+            case .unpaid:  return "Unpaid Transaction"
+            case .product: return "Product"
+            }
+        }
+    }
+
     struct LoadedData {
         let balance: BalanceResponse.Balance?
         let paid: [PaidTransaction]
@@ -26,6 +40,12 @@ final class BalanceViewController: NSViewController {
     /// renderList shows skeletons for that specific tab.
     var paginatingTab: Tab? {
         didSet { if oldValue != paginatingTab { renderList() } }
+    }
+
+    /// Set by AppDelegate around any data fetch — flips Prev/Next off so the
+    /// user can't queue another page change while one is already in flight.
+    var isFetching: Bool = false {
+        didSet { if oldValue != isFetching { updatePagination() } }
     }
 
     // Header
@@ -62,6 +82,13 @@ final class BalanceViewController: NSViewController {
     private let nextBtn = SoftButton(title: "Next ›")
     private let pageLabel = makeLabel("1 / 1", font: Theme.font(11, .medium), color: Theme.textSecondary, alignment: .center)
     private let paginationBar = NSView()
+
+    // Detail overlay
+    private let detailContainer = AppearanceAwareView()
+    private let detailScroll = NSScrollView()
+    private let detailContent = FlippedStackView()
+    private let detailTitleLabel = NSTextField(labelWithString: "")
+    private let detailBackBtn = IconButton(symbol: "chevron.left", accessibility: "Back")
 
     private var currentTab: Tab = .paid
     private var lastBalance: BalanceResponse.Balance?
@@ -127,8 +154,8 @@ final class BalanceViewController: NSViewController {
         NSLayoutConstraint.activate([
             logoView.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
             logoView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            logoView.widthAnchor.constraint(equalToConstant: 28),
-            logoView.heightAnchor.constraint(equalToConstant: 28),
+            logoView.widthAnchor.constraint(equalToConstant: 32),
+            logoView.heightAnchor.constraint(equalToConstant: 26),
             brandLabel.leadingAnchor.constraint(equalTo: logoView.trailingAnchor, constant: 10),
             brandLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             settingsBtn.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
@@ -268,13 +295,306 @@ final class BalanceViewController: NSViewController {
             statusLabel.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
             statusLabel.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
         ])
+
+        buildDetailOverlay()
+    }
+
+    private func buildDetailOverlay() {
+        detailContainer.fillColor = Theme.windowBg
+        detailContainer.translatesAutoresizingMaskIntoConstraints = false
+        detailContainer.isHidden = true
+        view.addSubview(detailContainer)
+        NSLayoutConstraint.activate([
+            detailContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            detailContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            detailContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            detailContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
+
+        let dHeader = AppearanceAwareView()
+        dHeader.fillColor = Theme.headerBg
+        dHeader.translatesAutoresizingMaskIntoConstraints = false
+
+        let dHeaderBorder = AppearanceAwareView()
+        dHeaderBorder.fillColor = Theme.cardBorder
+        dHeaderBorder.translatesAutoresizingMaskIntoConstraints = false
+
+        detailBackBtn.target = self
+        detailBackBtn.action = #selector(detailBackTapped(_:))
+        detailBackBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        detailTitleLabel.font = Theme.font(15, .semibold)
+        detailTitleLabel.textColor = Theme.textPrimary
+        detailTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        dHeader.addSubview(detailBackBtn)
+        dHeader.addSubview(detailTitleLabel)
+        dHeader.addSubview(dHeaderBorder)
+
+        NSLayoutConstraint.activate([
+            detailBackBtn.leadingAnchor.constraint(equalTo: dHeader.leadingAnchor, constant: 12),
+            detailBackBtn.centerYAnchor.constraint(equalTo: dHeader.centerYAnchor),
+            detailTitleLabel.leadingAnchor.constraint(equalTo: detailBackBtn.trailingAnchor, constant: 10),
+            detailTitleLabel.centerYAnchor.constraint(equalTo: dHeader.centerYAnchor),
+            dHeaderBorder.leadingAnchor.constraint(equalTo: dHeader.leadingAnchor),
+            dHeaderBorder.trailingAnchor.constraint(equalTo: dHeader.trailingAnchor),
+            dHeaderBorder.bottomAnchor.constraint(equalTo: dHeader.bottomAnchor),
+            dHeaderBorder.heightAnchor.constraint(equalToConstant: 1),
+        ])
+
+        detailScroll.hasVerticalScroller = true
+        detailScroll.drawsBackground = false
+        detailScroll.borderType = .noBorder
+        detailScroll.autohidesScrollers = true
+        detailScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        detailContent.orientation = .vertical
+        detailContent.alignment = .leading
+        detailContent.spacing = 14
+        detailContent.translatesAutoresizingMaskIntoConstraints = false
+        detailScroll.documentView = detailContent
+
+        detailContainer.addSubview(dHeader)
+        detailContainer.addSubview(detailScroll)
+
+        NSLayoutConstraint.activate([
+            dHeader.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor),
+            dHeader.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor),
+            dHeader.topAnchor.constraint(equalTo: detailContainer.topAnchor),
+            dHeader.heightAnchor.constraint(equalToConstant: 56),
+
+            detailScroll.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor, constant: 16),
+            detailScroll.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor, constant: -16),
+            detailScroll.topAnchor.constraint(equalTo: dHeader.bottomAnchor, constant: 14),
+            detailScroll.bottomAnchor.constraint(equalTo: detailContainer.bottomAnchor, constant: -14),
+
+            detailContent.leadingAnchor.constraint(equalTo: detailScroll.contentView.leadingAnchor),
+            detailContent.trailingAnchor.constraint(equalTo: detailScroll.contentView.trailingAnchor),
+            detailContent.topAnchor.constraint(equalTo: detailScroll.contentView.topAnchor),
+            detailContent.widthAnchor.constraint(equalTo: detailScroll.contentView.widthAnchor),
+        ])
+    }
+
+    // MARK: - Detail show/hide + populate
+
+    func showDetail(_ item: DetailItem) {
+        detailTitleLabel.stringValue = item.title
+        populateDetailContent(for: item)
+        detailContainer.isHidden = false
+        // Detail is read-only; the list-level controls don't apply here.
+        refreshBtn.isHidden = true
+        settingsBtn.isHidden = true
+    }
+
+    @objc private func detailBackTapped(_ sender: Any?) {
+        detailContainer.isHidden = true
+        refreshBtn.isHidden = false
+        settingsBtn.isHidden = false
+    }
+
+    private func populateDetailContent(for item: DetailItem) {
+        detailContent.arrangedSubviews.forEach {
+            detailContent.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        switch item {
+        case .paid(let tx):    populatePaidDetail(tx)
+        case .unpaid(let tx):  populateUnpaidDetail(tx)
+        case .product(let p):  populateProductDetail(p)
+        }
+    }
+
+    private func populatePaidDetail(_ tx: PaidTransaction) {
+        let name = tx.customer?.name ?? "—"
+        addDetailHeadline(name: name, email: tx.customer?.email)
+        addDetailHeroAmount("Rp " + Format.numberOnly(tx.credit ?? 0),
+                            color: Theme.paidGreen,
+                            pillText: "PAID", pillColor: Theme.paidGreen)
+        addDetailDivider()
+        addDetailField("Type", tx.balanceHistoryType ?? "—")
+        addDetailField("Payment Method", tx.paymentMethod ?? "—")
+        addDetailField("Status", tx.status ?? "—")
+        addDetailField("Date", formatDate(tx.createdAt))
+        if let plName = tx.paymentLink?.name {
+            addDetailField("Payment Link", plName)
+        }
+        addDetailFieldCopy("Transaction ID", tx.id)
+    }
+
+    private func populateUnpaidDetail(_ tx: UnpaidTransaction) {
+        let name = tx.customer?.name ?? "—"
+        addDetailHeadline(name: name, email: tx.customer?.email)
+        addDetailHeroAmount("Rp " + Format.numberOnly(tx.amount ?? 0),
+                            color: Theme.unpaidPink,
+                            pillText: "UNPAID", pillColor: Theme.unpaidPink)
+        addDetailDivider()
+        addDetailField("Type", tx.type ?? tx.paymentLink?.name ?? "—")
+        addDetailField("Status", tx.status ?? "—")
+        addDetailField("Date", formatDate(tx.createdAt))
+        if let url = tx.paymentUrl, !url.isEmpty {
+            addDetailURLField("Payment URL", url)
+        }
+        addDetailFieldCopy("Transaction ID", tx.id)
+    }
+
+    private func populateProductDetail(_ p: Product) {
+        addDetailHeadline(name: p.name, email: nil)
+        let amountStr = (p.amount.map { "Rp " + Format.numberOnly($0) }) ?? "—"
+        let pillText = (p.status ?? "").uppercased().isEmpty ? "PRODUCT" : (p.status ?? "").uppercased()
+        let pillColor: NSColor = (p.status?.lowercased() == "active") ? Theme.paidGreen : Theme.textSecondary
+        addDetailHeroAmount(amountStr, color: Theme.textPrimary,
+                            pillText: pillText, pillColor: pillColor)
+        addDetailDivider()
+        addDetailField("Type", p.type ?? "—")
+        if let cat = p.category, !cat.isEmpty { addDetailField("Category", cat) }
+        if let slug = p.link, !slug.isEmpty { addDetailField("Slug", slug) }
+        if let url = p.linkUrl, !url.isEmpty {
+            addDetailURLField("Public Link", url)
+        }
+        if let url = p.linkPayment, !url.isEmpty {
+            addDetailURLField("Checkout Link", url)
+        }
+        addDetailFieldCopy("Product ID", p.id)
+    }
+
+    // MARK: - Detail row helpers
+
+    private func addDetailRow(_ subview: NSView) {
+        detailContent.addArrangedSubview(subview)
+        NSLayoutConstraint.activate([
+            subview.leadingAnchor.constraint(equalTo: detailContent.leadingAnchor),
+            subview.trailingAnchor.constraint(equalTo: detailContent.trailingAnchor),
+        ])
+    }
+
+    private func addDetailHeadline(name: String, email: String?) {
+        let nameLbl = makeLabel(name, font: Theme.font(20, .bold), color: Theme.textPrimary)
+        nameLbl.maximumNumberOfLines = 0
+        nameLbl.lineBreakMode = .byWordWrapping
+        nameLbl.preferredMaxLayoutWidth = 320
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        stack.addArrangedSubview(nameLbl)
+        if let e = email, !e.isEmpty {
+            let emailLbl = makeLabel(e, font: Theme.font(12), color: Theme.textSecondary)
+            stack.addArrangedSubview(emailLbl)
+        }
+        addDetailRow(stack)
+    }
+
+    private func addDetailHeroAmount(_ amount: String, color: NSColor,
+                                     pillText: String, pillColor: NSColor) {
+        let amountLbl = makeLabel(amount, font: Theme.font(22, .bold), color: color)
+        let pill = Pill(text: pillText, color: pillColor, softBg: NSColor.white)
+        let row = NSStackView(views: [amountLbl, pill, NSView()])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+        addDetailRow(row)
+    }
+
+    private func addDetailDivider() {
+        let line = AppearanceAwareView()
+        line.fillColor = Theme.cardBorder
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        addDetailRow(line)
+    }
+
+    private func addDetailField(_ label: String, _ value: String) {
+        let lbl = makeKernLabel(label.uppercased(),
+                                font: Theme.font(10, .medium),
+                                color: Theme.textSecondary, kern: 0.8)
+        let val = makeLabel(value, font: Theme.font(13), color: Theme.textPrimary)
+        val.maximumNumberOfLines = 0
+        val.lineBreakMode = .byWordWrapping
+        val.preferredMaxLayoutWidth = 320
+        let stack = NSStackView(views: [lbl, val])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        addDetailRow(stack)
+    }
+
+    private func addDetailFieldCopy(_ label: String, _ value: String) {
+        let lbl = makeKernLabel(label.uppercased(),
+                                font: Theme.font(10, .medium),
+                                color: Theme.textSecondary, kern: 0.8)
+        let val = makeLabel(value, font: Theme.font(12), color: Theme.textPrimary)
+        val.maximumNumberOfLines = 0
+        val.lineBreakMode = .byCharWrapping
+        val.preferredMaxLayoutWidth = 240
+
+        let copyBtn = SoftButton(title: "Copy")
+        copyBtn.target = self
+        copyBtn.action = #selector(copyDetailValue(_:))
+        objc_setAssociatedObject(copyBtn, &Self.linkKey, value as Any, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+
+        let valRow = NSStackView(views: [val, copyBtn, NSView()])
+        valRow.orientation = .horizontal
+        valRow.alignment = .firstBaseline
+        valRow.spacing = 8
+
+        let stack = NSStackView(views: [lbl, valRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
+        addDetailRow(stack)
+    }
+
+    private func addDetailURLField(_ label: String, _ url: String) {
+        let lbl = makeKernLabel(label.uppercased(),
+                                font: Theme.font(10, .medium),
+                                color: Theme.textSecondary, kern: 0.8)
+        let val = makeLabel(url, font: Theme.font(12), color: Theme.textPrimary)
+        val.maximumNumberOfLines = 0
+        val.lineBreakMode = .byCharWrapping
+        val.preferredMaxLayoutWidth = 320
+
+        let copyBtn = SoftButton(title: "Copy")
+        copyBtn.target = self
+        copyBtn.action = #selector(copyDetailValue(_:))
+        objc_setAssociatedObject(copyBtn, &Self.linkKey, url as Any, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+
+        let openBtn = SoftButton(title: "Open ↗")
+        openBtn.target = self
+        openBtn.action = #selector(openDetailURL(_:))
+        objc_setAssociatedObject(openBtn, &Self.linkKey, url as Any, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+
+        let btnRow = NSStackView(views: [copyBtn, openBtn, NSView()])
+        btnRow.orientation = .horizontal
+        btnRow.spacing = 8
+
+        let stack = NSStackView(views: [lbl, val, btnRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        addDetailRow(stack)
+    }
+
+    @objc private func copyDetailValue(_ sender: SoftButton) {
+        guard let s = objc_getAssociatedObject(sender, &Self.linkKey) as? String, !s.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        sender.flashCopied()
+    }
+
+    @objc private func openDetailURL(_ sender: SoftButton) {
+        guard let s = objc_getAssociatedObject(sender, &Self.linkKey) as? String,
+              let url = URL(string: s) else { return }
+        onOpenURL?(url)
     }
 
     // MARK: - State / render
 
     enum State {
         case unconfigured
-        case loading
+        /// `force == true` means a user-initiated refresh; show skeletons even
+        /// if we have prior data. `false` is used for initial load + silent
+        /// background refresh.
+        case loading(force: Bool)
         case loaded(LoadedData)
         case error(String)
     }
@@ -290,14 +610,19 @@ final class BalanceViewController: NSViewController {
             statusLabel.stringValue = "no api key — open settings"
             statusLabel.isHidden = false
             renderList()
-        case .loading:
-            NSLog("[Mayar] render: loading (have prior data: \(lastBalance != nil))")
+        case .loading(let force):
+            NSLog("[Mayar] render: loading force=\(force) (have prior data: \(lastBalance != nil))")
             unconfigured = false
             statusLabel.isHidden = true
+            // Only blank the balance amounts on a true cold load — a user
+            // tapping refresh keeps the existing numbers visible until fresh
+            // data arrives.
             if lastBalance == nil {
                 totalAmount.stringValue = " "
                 activeAmount.stringValue = " "
                 pendingAmount.stringValue = " "
+            }
+            if force || lastBalance == nil {
                 renderSkeletons()
             }
         case .loaded(let d):
@@ -339,8 +664,10 @@ final class BalanceViewController: NSViewController {
         }
         paginationBar.isHidden = false
         pageLabel.stringValue = "\(info.page) / \(max(info.pageCount, 1))"
-        prevBtn.isEnabled = info.page > 1
-        nextBtn.isEnabled = info.hasMore || info.page < info.pageCount
+        let canPrev = info.page > 1
+        let canNext = info.hasMore || info.page < info.pageCount
+        prevBtn.isEnabled = canPrev && !isFetching
+        nextBtn.isEnabled = canNext && !isFetching
     }
 
     func switchTab(_ tab: Tab) {
@@ -489,6 +816,7 @@ final class BalanceViewController: NSViewController {
         card.addSubview(body)
         body.pin(to: card, inset: NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14))
 
+        attachDetail(.paid(tx), to: card)
         return card
     }
 
@@ -520,12 +848,7 @@ final class BalanceViewController: NSViewController {
         card.addSubview(body)
         body.pin(to: card, inset: NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14))
 
-        if let s = tx.paymentUrl, let url = URL(string: s) {
-            let click = NSClickGestureRecognizer(target: self, action: #selector(cardClick(_:)))
-            card.addGestureRecognizer(click)
-            objc_setAssociatedObject(card, &Self.urlKey, url, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-        }
-
+        attachDetail(.unpaid(tx), to: card)
         return card
     }
 
@@ -569,6 +892,8 @@ final class BalanceViewController: NSViewController {
             buttonRow.leadingAnchor.constraint(equalTo: body.leadingAnchor),
             buttonRow.trailingAnchor.constraint(equalTo: body.trailingAnchor),
         ])
+
+        attachDetail(.product(p), to: card)
         return card
     }
 
@@ -587,6 +912,7 @@ final class BalanceViewController: NSViewController {
 
     private static var urlKey: UInt8 = 0
     private static var linkKey: UInt8 = 0
+    private static var detailItemKey: UInt8 = 0
 
     @objc private func refreshTapped(_ sender: Any?) {
         NSLog("[Mayar] refresh tapped")
@@ -607,9 +933,25 @@ final class BalanceViewController: NSViewController {
     @objc private func nextPageTapped(_ sender: Any?) { onNextPage?(currentTab) }
 
     @objc private func cardClick(_ g: NSClickGestureRecognizer) {
-        guard let v = g.view,
-              let url = objc_getAssociatedObject(v, &Self.urlKey) as? URL else { return }
-        onOpenURL?(url)
+        guard let v = g.view else { return }
+        if let box = objc_getAssociatedObject(v, &Self.detailItemKey) as? DetailItemBox {
+            showDetail(box.item)
+        } else if let url = objc_getAssociatedObject(v, &Self.urlKey) as? URL {
+            onOpenURL?(url)
+        }
+    }
+
+    /// Wraps a DetailItem in a class so it survives `objc_setAssociatedObject`
+    /// (which requires AnyObject for non-retained options).
+    private final class DetailItemBox {
+        let item: DetailItem
+        init(_ item: DetailItem) { self.item = item }
+    }
+
+    private func attachDetail(_ item: DetailItem, to card: NSView) {
+        let click = NSClickGestureRecognizer(target: self, action: #selector(cardClick(_:)))
+        card.addGestureRecognizer(click)
+        objc_setAssociatedObject(card, &Self.detailItemKey, DetailItemBox(item), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 
     @objc private func copyProductLink(_ sender: SoftButton) {
@@ -630,6 +972,17 @@ final class BalanceViewController: NSViewController {
     // MARK: - Logo
 
     private static let appIconImage: NSImage? = {
+        // Prefer the transparent-bg SVG so the M shows cleanly on light AND
+        // dark header backgrounds. The .icns fallback has a white square that
+        // would block the dark header.
+        if let url = Bundle.main.url(forResource: "MayarLogo", withExtension: "svg"),
+           let img = NSImage(contentsOf: url) {
+            let h: CGFloat = 24
+            let w: CGFloat = h * (133.95 / 108.0)
+            img.size = NSSize(width: w, height: h)
+            img.isTemplate = false  // keep brand colors
+            return img
+        }
         if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
            let img = NSImage(contentsOfFile: path) {
             return img
