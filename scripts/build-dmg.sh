@@ -41,11 +41,18 @@ rm -rf "$STAGING"
 # notarization. Notarization checks the .app inside as well as the DMG
 # wrapper. After Apple's notary service approves, we staple the ticket
 # so the DMG launches cleanly without an internet connection.
-SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: PT Mayar Kernel Supernova (3393MGXACK)}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-MAYAR_NOTARY}"
+#
+# Defaults: ad-hoc signing (SIGN_IDENTITY=-), notarization skipped. Provide
+# both env vars to produce a notarized DMG for distribution:
+#   SIGN_IDENTITY="Developer ID Application: …" \
+#   NOTARY_PROFILE="…" \
+#   bash scripts/build-dmg.sh
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 
-if [ "$SIGN_IDENTITY" = "-" ] || [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
-    echo "→ skipping DMG signing + notarization (SIGN_IDENTITY=$SIGN_IDENTITY SKIP_NOTARIZE=${SKIP_NOTARIZE:-0})"
+if [ "$SIGN_IDENTITY" = "-" ] || [ -z "$NOTARY_PROFILE" ] || [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
+    echo "→ skipping DMG signing + notarization"
+    echo "  (SIGN_IDENTITY='$SIGN_IDENTITY' NOTARY_PROFILE='$NOTARY_PROFILE' SKIP_NOTARIZE=${SKIP_NOTARIZE:-0})"
 else
     echo "→ codesign DMG with: $SIGN_IDENTITY"
     codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG" >/dev/null

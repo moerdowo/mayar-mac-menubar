@@ -26,11 +26,11 @@ fi
 cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 [ -f "Resources/MayarLogo.svg" ] && cp "Resources/MayarLogo.svg" "$APP/Contents/Resources/MayarLogo.svg"
 
-# Codesign. Defaults to the project's Developer ID Application certificate so
-# the resulting .app passes Gatekeeper without manual quarantine fiddling.
-# To produce an ad-hoc signed local build instead (e.g. on a machine without
-# the cert), run with `SIGN_IDENTITY=- bash scripts/build-app.sh`.
-SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: PT Mayar Kernel Supernova (3393MGXACK)}"
+# Codesign. Defaults to ad-hoc signing so the script works out of the box on
+# any machine — including forks that don't have a Developer ID. To produce a
+# Gatekeeper-friendly signed build for distribution, set the env var:
+#   SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" bash scripts/build-app.sh
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 if [ "$SIGN_IDENTITY" = "-" ]; then
     echo "→ codesign (ad-hoc)"
