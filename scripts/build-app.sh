@@ -26,14 +26,37 @@ fi
 cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 [ -f "Resources/MayarLogo.svg" ] && cp "Resources/MayarLogo.svg" "$APP/Contents/Resources/MayarLogo.svg"
 
-# Ad-hoc sign. SMAppService (Launch at Login) refuses unsigned bundles, and
-# Gatekeeper is friendlier with at least a signature even if it's `-`.
-echo "→ codesign --sign -"
-codesign --force --deep --options runtime --sign - "$APP" >/dev/null
+# Codesign. Defaults to the project's Developer ID Application certificate so
+# the resulting .app passes Gatekeeper without manual quarantine fiddling.
+# To produce an ad-hoc signed local build instead (e.g. on a machine without
+# the cert), run with `SIGN_IDENTITY=- bash scripts/build-app.sh`.
+SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: PT Mayar Kernel Supernova (3393MGXACK)}"
+
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "→ codesign (ad-hoc)"
+    codesign --force --deep --options runtime --sign - "$APP" >/dev/null
+else
+    if ! security find-identity -p codesigning -v 2>/dev/null | grep -qF "$SIGN_IDENTITY"; then
+        echo "✗ signing identity not in keychain: $SIGN_IDENTITY"
+        echo "  Install the Developer ID cert, override with SIGN_IDENTITY=...,"
+        echo "  or skip signing with SIGN_IDENTITY=-"
+        exit 1
+    fi
+    echo "→ codesign with: $SIGN_IDENTITY"
+    codesign --force --deep \
+        --options runtime \
+        --timestamp \
+        --sign "$SIGN_IDENTITY" \
+        "$APP" >/dev/null
+fi
+
+# Verify the signature is well-formed before we hand it off to the DMG step.
+codesign --verify --deep --strict "$APP" 2>&1 || {
+    echo "✗ codesign verify failed"; exit 1
+}
 
 echo
 echo "✓ built $APP"
 echo
 echo "  open '$APP'                       # launch"
 echo "  cp -R '$APP' /Applications/       # install"
-echo "  xattr -dr com.apple.quarantine '$APP'   # if Gatekeeper complains"

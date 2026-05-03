@@ -37,6 +37,44 @@ hdiutil create \
 
 rm -rf "$STAGING"
 
+# Sign the DMG (so its own signature is verifiable) and submit for
+# notarization. Notarization checks the .app inside as well as the DMG
+# wrapper. After Apple's notary service approves, we staple the ticket
+# so the DMG launches cleanly without an internet connection.
+SIGN_IDENTITY="${SIGN_IDENTITY:-Developer ID Application: PT Mayar Kernel Supernova (3393MGXACK)}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-MAYAR_NOTARY}"
+
+if [ "$SIGN_IDENTITY" = "-" ] || [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
+    echo "→ skipping DMG signing + notarization (SIGN_IDENTITY=$SIGN_IDENTITY SKIP_NOTARIZE=${SKIP_NOTARIZE:-0})"
+else
+    echo "→ codesign DMG with: $SIGN_IDENTITY"
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG" >/dev/null
+
+    echo "→ notarize via profile '$NOTARY_PROFILE' (this can take a few minutes)"
+    if ! xcrun notarytool submit "$DMG" \
+        --keychain-profile "$NOTARY_PROFILE" \
+        --wait \
+        --output-format json > /tmp/notary-result.json; then
+        echo "✗ notarytool submit failed"
+        cat /tmp/notary-result.json
+        echo
+        echo "  Run: xcrun notarytool log <submission-id> --keychain-profile $NOTARY_PROFILE"
+        exit 1
+    fi
+    STATUS=$(/usr/bin/grep -o '"status":"[^"]*"' /tmp/notary-result.json | head -1 | cut -d'"' -f4)
+    if [ "$STATUS" != "Accepted" ]; then
+        echo "✗ notarization status: $STATUS"
+        cat /tmp/notary-result.json
+        SUB_ID=$(/usr/bin/grep -o '"id":"[^"]*"' /tmp/notary-result.json | head -1 | cut -d'"' -f4)
+        echo
+        echo "  Run: xcrun notarytool log $SUB_ID --keychain-profile $NOTARY_PROFILE"
+        exit 1
+    fi
+    echo "→ notarization Accepted; stapling ticket"
+    xcrun stapler staple "$DMG" >/dev/null
+    xcrun stapler validate "$DMG" >/dev/null
+fi
+
 SHA=$(shasum -a 256 "$DMG" | awk '{print $1}')
 SIZE=$(du -h "$DMG" | cut -f1)
 
