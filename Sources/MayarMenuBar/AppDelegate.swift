@@ -23,10 +23,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var isLoading = false
     private var paginatingTab: BalanceViewController.Tab?
     private var forceRefreshActive = false
+    /// Held only while the Set-API-Key alert is on screen so the Paste button
+    /// can reach back into the field.
+    private weak var apiKeyField: NSSecureTextField?
 
     private let pageSize = 10
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installEditMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             applyStatusBarIcon(to: button)
@@ -65,6 +69,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             self?.refresh(force: false)
         }
+    }
+
+    // MARK: - Edit menu (so Cmd-C / V / X / A work in text fields)
+
+    /// LSUIElement apps have no system menu bar, so keyboard shortcuts that
+    /// rely on the Edit menu (Cmd+V Paste in particular) never reach the
+    /// first responder. Installing a hidden mainMenu with the standard items
+    /// gives AppKit somewhere to route those equivalents to.
+    private func installEditMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(title: "Quit",
+                                   action: #selector(NSApp.terminate(_:)),
+                                   keyEquivalent: "q"))
+        appItem.submenu = appMenu
+        main.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(NSMenuItem(title: "Cut",        action: #selector(NSText.cut(_:)),       keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(title: "Copy",       action: #selector(NSText.copy(_:)),      keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(title: "Paste",      action: #selector(NSText.paste(_:)),     keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editItem.submenu = editMenu
+        main.addItem(editItem)
+
+        NSApp.mainMenu = main
     }
 
     // MARK: - Status item icon
@@ -212,6 +245,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     @objc private func menuRefresh() { refresh(force: true) }
     @objc private func menuSetKey() { promptForAPIKey(initial: false) }
+
+    @objc private func pasteIntoAPIKeyField(_ sender: Any?) {
+        guard let field = apiKeyField else { return }
+        guard let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        field.stringValue = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        field.window?.makeFirstResponder(field)
+    }
     @objc private func menuToggleLogin() { toggleLaunchAtLogin() }
     @objc private func menuDashboard() { openDashboard() }
     @objc private func menuQuit() { NSApp.terminate(nil) }
@@ -400,13 +443,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
 
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        // Field on the left, Paste button on the right of the same row.
+        let containerWidth: CGFloat = 320
+        let pasteWidth: CGFloat = 70
+        let gap: CGFloat = 8
+        let fieldWidth = containerWidth - pasteWidth - gap
+
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 2, width: fieldWidth, height: 24))
         field.placeholderString = "mayar_xxx…"
         if let existing = api.config?.apiKey { field.stringValue = existing }
-        alert.accessoryView = field
+
+        let paste = NSButton(frame: NSRect(x: fieldWidth + gap, y: 0, width: pasteWidth, height: 28))
+        paste.title = "Paste"
+        paste.bezelStyle = .rounded
+        paste.target = self
+        paste.action = #selector(pasteIntoAPIKeyField(_:))
+
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: containerWidth, height: 28))
+        row.addSubview(field)
+        row.addSubview(paste)
+
+        alert.accessoryView = row
         alert.window.initialFirstResponder = field
+        apiKeyField = field
 
         let response = alert.runModal()
+        apiKeyField = nil
         guard response == .alertFirstButtonReturn else { return }
         let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return }
