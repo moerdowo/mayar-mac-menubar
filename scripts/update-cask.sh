@@ -65,12 +65,11 @@ cask "mayar-menubar" do
 end
 EOF
 
-if git diff --quiet Casks/mayar-menubar.rb; then
+git add Casks/mayar-menubar.rb
+if git diff --cached --quiet; then
     echo "→ cask unchanged; nothing to push"
     exit 0
 fi
-
-git add Casks/mayar-menubar.rb
 git commit -m "mayar-menubar $VERSION"
 git push origin main
 
