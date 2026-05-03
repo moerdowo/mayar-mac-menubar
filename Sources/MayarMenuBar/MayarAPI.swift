@@ -37,11 +37,61 @@ struct PaidTransaction: Decodable {
 
 struct UnpaidTransactionsResponse: Decodable {
     let data: [UnpaidTransaction]
+    let hasMore: Bool?
+    let page: Int?
+    let pageCount: Int?
     let total: Int?
+}
+
+struct ProductsResponse: Decodable {
+    let data: [Product]
+    let hasMore: Bool?
+    let page: Int?
+    let pageCount: Int?
+    let total: Int?
+}
+
+// MARK: - Page metadata
+
+struct PageInfo {
+    let page: Int
+    let pageCount: Int
+    let hasMore: Bool
+    static let unknown = PageInfo(page: 1, pageCount: 1, hasMore: false)
+}
+
+extension PaidTransactionsResponse {
+    var pageInfo: PageInfo {
+        PageInfo(page: page ?? 1, pageCount: max(pageCount ?? 1, 1), hasMore: hasMore ?? false)
+    }
+}
+extension UnpaidTransactionsResponse {
+    var pageInfo: PageInfo {
+        PageInfo(page: page ?? 1, pageCount: max(pageCount ?? 1, 1), hasMore: hasMore ?? false)
+    }
+}
+extension ProductsResponse {
+    var pageInfo: PageInfo {
+        PageInfo(page: page ?? 1, pageCount: max(pageCount ?? 1, 1), hasMore: hasMore ?? false)
+    }
+}
+
+struct Product: Decodable {
+    let id: String
+    let name: String
+    let link: String?           // unique slug
+    let type: String?           // "membership", "saas", "event", …
+    let status: String?         // "active" / "inactive"
+    let amount: Int?            // price (IDR) — nullable
+    let category: String?
+    let createdAt: Double?
+    let linkUrl: String?        // public product page
+    let linkPayment: String?    // customer checkout URL
 }
 
 struct UnpaidTransaction: Decodable {
     let id: String
+    let type: String?
     let amount: Int?
     let status: String?
     let createdAt: Double?
@@ -81,22 +131,28 @@ final class MayarAPI {
         return resp.data
     }
 
-    func paidTransactions(pageSize: Int = 10) async throws -> [PaidTransaction] {
-        let resp: PaidTransactionsResponse = try await get(
+    func paidTransactions(page: Int = 1, pageSize: Int = 10) async throws -> PaidTransactionsResponse {
+        return try await get(
             path: "/hl/v1/transactions",
-            query: [URLQueryItem(name: "page", value: "1"),
+            query: [URLQueryItem(name: "page", value: String(page)),
                     URLQueryItem(name: "pageSize", value: String(pageSize))]
         )
-        return resp.data
     }
 
-    func unpaidTransactions(pageSize: Int = 10) async throws -> [UnpaidTransaction] {
-        let resp: UnpaidTransactionsResponse = try await get(
+    func unpaidTransactions(page: Int = 1, pageSize: Int = 10) async throws -> UnpaidTransactionsResponse {
+        return try await get(
             path: "/hl/v1/transactions/unpaid",
-            query: [URLQueryItem(name: "page", value: "1"),
+            query: [URLQueryItem(name: "page", value: String(page)),
                     URLQueryItem(name: "pageSize", value: String(pageSize))]
         )
-        return resp.data
+    }
+
+    func products(page: Int = 1, pageSize: Int = 10) async throws -> ProductsResponse {
+        return try await get(
+            path: "/hl/v1/product",
+            query: [URLQueryItem(name: "page", value: String(page)),
+                    URLQueryItem(name: "pageSize", value: String(pageSize))]
+        )
     }
 
     private func get<T: Decodable>(path: String, query: [URLQueryItem] = []) async throws -> T {

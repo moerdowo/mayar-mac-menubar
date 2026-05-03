@@ -24,6 +24,7 @@ if [ ! -f "Resources/AppIcon.icns" ]; then
   bash "$ROOT/scripts/build-icon.sh"
 fi
 cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+[ -f "Resources/MayarLogo.svg" ] && cp "Resources/MayarLogo.svg" "$APP/Contents/Resources/MayarLogo.svg"
 
 # Ad-hoc sign. SMAppService (Launch at Login) refuses unsigned bundles, and
 # Gatekeeper is friendlier with at least a signature even if it's `-`.
