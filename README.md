@@ -20,6 +20,7 @@ A small native macOS menu-bar app that shows your [Mayar](https://mayar.id) bala
 - **Light, Dark, or System** appearance — the menu-bar icon also adapts via macOS template tinting.
 - **Hide Balance** toggle so the amount isn't visible to over-the-shoulder onlookers.
 - **Launch at Login** via `SMAppService` — the app starts when you log in.
+- **Signed & notarized** with an Apple Developer ID — installs cleanly via Homebrew or DMG, no Gatekeeper warnings.
 - Native AppKit. No Electron, no bundled runtime — about 1k lines of Swift.
 
 ## Install
@@ -31,12 +32,7 @@ brew tap moerdowo/mayar
 brew install --cask mayar-menubar
 ```
 
-That installs `MayarMenuBar.app` into `/Applications`. Launch it from Finder or via `open -a MayarMenuBar`.
-
-> The build is ad-hoc signed, not Apple-notarized. If macOS Gatekeeper blocks first launch, either right-click the app and choose **Open**, or run:
-> ```sh
-> xattr -dr com.apple.quarantine /Applications/MayarMenuBar.app
-> ```
+That installs `MayarMenuBar.app` into `/Applications`. Launch it from Finder or via `open -a MayarMenuBar`. The build is signed with a Developer ID Application certificate and notarized by Apple, so Gatekeeper accepts it on first launch with no prompts.
 
 ### Manual (DMG)
 
@@ -100,14 +96,28 @@ The app talks only to `api.mayar.id`. No analytics, no telemetry, no third parti
 
 ## Releasing a new version
 
-For maintainers — the three release scripts run in order:
+For maintainers — the four scripts run in order:
 
 1. Bump `CFBundleShortVersionString` in [`Resources/Info.plist`](Resources/Info.plist).
-2. `bash scripts/build-app.sh && bash scripts/build-dmg.sh` — produces `build/MayarMenuBar-<ver>.dmg`.
-3. `bash scripts/release.sh` — tags `v<ver>`, pushes the tag, creates the GitHub release with the DMG asset.
-4. `bash scripts/update-cask.sh` — updates [`moerdowo/homebrew-mayar`](https://github.com/moerdowo/homebrew-mayar)'s cask with the new version + sha256.
+2. `bash scripts/build-app.sh` — compiles, bundles, and signs the `.app` with `Developer ID Application` + hardened runtime + secure timestamp.
+3. `bash scripts/build-dmg.sh` — wraps the `.app` in a DMG, signs it, submits via `xcrun notarytool --keychain-profile MAYAR_NOTARY --wait`, and staples the notarization ticket.
+4. `bash scripts/release.sh` — tags `v<ver>`, pushes the tag, creates the GitHub release with the DMG asset.
+5. `bash scripts/update-cask.sh` — updates [`moerdowo/homebrew-mayar`](https://github.com/moerdowo/homebrew-mayar)'s cask with the new version + sha256.
 
 The cask uses `livecheck { strategy :github_latest }`, so `brew upgrade --cask mayar-menubar` picks up new releases automatically.
+
+### Signing setup (one-time)
+
+The build scripts default to `SIGN_IDENTITY="Developer ID Application: PT Mayar Kernel Supernova (3393MGXACK)"` and `NOTARY_PROFILE="MAYAR_NOTARY"`. To work on a fork or a fresh machine:
+
+- **Skip signing** (local dev): `SIGN_IDENTITY=- bash scripts/build-app.sh`. Produces an ad-hoc-signed binary that runs locally but won't pass Gatekeeper on other machines.
+- **Use your own Developer ID**: `SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" bash scripts/build-app.sh`.
+- **Notarytool credentials**: store an app-specific password under a profile name once with
+  ```sh
+  xcrun notarytool store-credentials "MAYAR_NOTARY" \
+      --apple-id you@example.com --team-id TEAMID --password xxxx-xxxx-xxxx-xxxx
+  ```
+  Override the profile name via `NOTARY_PROFILE=...`.
 
 ## License
 
