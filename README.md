@@ -94,31 +94,6 @@ API endpoints used: `GET /hl/v1/balance`, `GET /hl/v1/transactions`, `GET /hl/v1
 
 The app talks only to `api.mayar.id`. No analytics, no telemetry, no third parties. The API key is stored locally and only ever leaves your machine inside the `Authorization: Bearer …` header on each Mayar API call.
 
-## Releasing a new version
-
-For maintainers — the four scripts run in order:
-
-1. Bump `CFBundleShortVersionString` in [`Resources/Info.plist`](Resources/Info.plist).
-2. `bash scripts/build-app.sh` — compiles, bundles, and signs the `.app` with `Developer ID Application` + hardened runtime + secure timestamp.
-3. `bash scripts/build-dmg.sh` — wraps the `.app` in a DMG, signs it, submits via `xcrun notarytool --keychain-profile MAYAR_NOTARY --wait`, and staples the notarization ticket.
-4. `bash scripts/release.sh` — tags `v<ver>`, pushes the tag, creates the GitHub release with the DMG asset.
-5. `bash scripts/update-cask.sh` — updates [`moerdowo/homebrew-mayar`](https://github.com/moerdowo/homebrew-mayar)'s cask with the new version + sha256.
-
-The cask uses `livecheck { strategy :github_latest }`, so `brew upgrade --cask mayar-menubar` picks up new releases automatically.
-
-### Signing setup (one-time)
-
-The build scripts default to `SIGN_IDENTITY="Developer ID Application: PT Mayar Kernel Supernova (3393MGXACK)"` and `NOTARY_PROFILE="MAYAR_NOTARY"`. To work on a fork or a fresh machine:
-
-- **Skip signing** (local dev): `SIGN_IDENTITY=- bash scripts/build-app.sh`. Produces an ad-hoc-signed binary that runs locally but won't pass Gatekeeper on other machines.
-- **Use your own Developer ID**: `SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" bash scripts/build-app.sh`.
-- **Notarytool credentials**: store an app-specific password under a profile name once with
-  ```sh
-  xcrun notarytool store-credentials "MAYAR_NOTARY" \
-      --apple-id you@example.com --team-id TEAMID --password xxxx-xxxx-xxxx-xxxx
-  ```
-  Override the profile name via `NOTARY_PROFILE=...`.
-
 ## License
 
 Not yet licensed. If you want to redistribute or fork, please open an issue first.
